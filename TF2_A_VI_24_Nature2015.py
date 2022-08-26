@@ -1,17 +1,21 @@
+# IMPORTING LIBRARIES
+
 import sys
 IN_COLAB = "google.colab" in sys.modules
 
-import tensorflow as tf
 import random
 import gym
 import numpy as np
 
+import tensorflow as tf
 from tensorflow.keras import optimizers, losses
 from tensorflow.keras import Model
 from collections import deque
 
 from IPython.display import clear_output
 
+
+# CREATING THE Q-Network
 # Neural Network Model Defined at Here.
 class Network(Model):
     def __init__(self, state_size: int, action_size: int, 
@@ -19,8 +23,8 @@ class Network(Model):
         """Initialization."""
         super(Network, self).__init__()
         
-        self.layer1 = tf.keras.layers.Dense(64, activation='relu')
-        self.layer2 = tf.keras.layers.Dense(64, activation='relu')
+        self.layer1 = tf.keras.layers.Dense(hidden_size, activation='relu')
+        self.layer2 = tf.keras.layers.Dense(hidden_size, activation='relu')
         self.value = tf.keras.layers.Dense(action_size)
 
     def call(self, state):
@@ -49,6 +53,8 @@ class DQNAgent:
             min_epsilon (float): min value of epsilon
             gamma (float): discount factor
         """
+        
+        # CREATING THE Q-Network
         self.env = env
         
         self.state_size = self.env.observation_space.shape[0]
@@ -59,26 +65,35 @@ class DQNAgent:
         self.lr = 0.001
         self.target_update = target_update
         self.gamma = 0.99
-
+        
         self.dqn = Network(self.state_size, self.action_size
                           )
         self.dqn_target = Network(self.state_size, self.action_size
                           )
         self.optimizers = optimizers.Adam(lr=self.lr, )
-
+        
         self.memory = deque(maxlen=2000)
-
+        
+        self._target_hard_update()
+        
+    # 3.4.1 EXPLORATION VS EXPLOITATION
     def get_action(self, state, epsilon):
         q_value = self.dqn(tf.convert_to_tensor([state], dtype=tf.float32))[0]
+        # 3. Choose an action a in the current world state (s)
+        # If this number < greater than epsilon doing a random choice --> exploration
         if np.random.rand() <= epsilon:
             action = np.random.choice(self.action_size)
+
+        ## Else --> exploitation (taking the biggest Q value for this state)
         else:
             action = np.argmax(q_value) 
-        return action
 
+        return action
+    
     def append_sample(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
 
+    # 3.4.2 UPDATING THE Q-VALUE
     def train_step(self):
         mini_batch = random.sample(self.memory, self.batch_size)
 
@@ -87,7 +102,7 @@ class DQNAgent:
         rewards     = [i[2] for i in mini_batch]
         next_states = [i[3] for i in mini_batch]
         dones       = [i[4] for i in mini_batch]
-
+        
         dqn_variable = self.dqn.trainable_variables
         with tf.GradientTape() as tape:
             tape.watch(dqn_variable)
@@ -102,14 +117,14 @@ class DQNAgent:
             #       = r                       otherwise
             curr_Qs    = self.dqn(states)
             main_value = tf.reduce_sum(tf.one_hot(actions, self.action_size) * curr_Qs, axis=1)
-
+            ## Obtain the Q' values by feeding the new state through our network
             next_Q_targs = self.dqn_target(next_states)
             next_action  = tf.argmax(next_Q_targs, axis=1)
             target_value = tf.reduce_sum(tf.one_hot(next_action, self.action_size) * next_Q_targs, axis=1)
             
             mask = 1 - dones
             target_value = rewards + self.gamma * target_value * mask 
-
+            
             error = tf.square(main_value - target_value) * 0.5
             loss  = tf.reduce_mean(error)
             
@@ -120,18 +135,24 @@ class DQNAgent:
         """Hard update: target <- local."""
         self.dqn_target.set_weights(self.dqn.get_weights())
 
-# environment
+# CREATING THE ENVIRONMENT
 env_name = "CartPole-v0"
 env = gym.make(env_name)
 
 # parameters
-# memory_size = 2000
 target_update = 100
-# epsilon_decay = 1 / 2000
-# initial_random_steps = 5000
 
+
+# INITIALIZING THE Q-PARAMETERS
+hidden_size = 128
 max_episodes = 200  # Set total number of episodes to train agent on.
-batch_size = 32
+batch_size = 64
+
+# Exploration parameters
+epsilon = 1.0                 # Exploration rate
+max_epsilon = 1.0             # Exploration probability at start
+min_epsilon = 0.01            # Minimum exploration probability 
+decay_rate = 0.005            # Exponential decay rate for exploration prob
 
 # train
 agent = DQNAgent(
@@ -145,35 +166,52 @@ agent = DQNAgent(
 if __name__ == "__main__":
     
     update_cnt    = 0
-    scores        = []
+    # 2.5 TRAINING LOOP
+    #List to contain all the rewards of all the episodes given to the agent
+    scores = []
     
+    # 2.6 EACH EPISODE    
     for episode in range(max_episodes):
+        ## Reset environment and get first new observation
         state = agent.env.reset()
         episode_reward = 0
-        done = False
+        done = False  # has the enviroment finished?
         
-        epsilon = 1 / (episode * 0.1 + 1)
+            
+        # 2.7 EACH TIME STEP    
         while not done:
+        # for step in range(max_steps):  # step index, maximum step is 99
+        
+            # 3.4.1 EXPLORATION VS EXPLOITATION
+            # Take the action (a) and observe the outcome state(s') and reward (r)
             action = agent.get_action(state, epsilon)
+            
+            # 2.7.2 TAKING ACTION
             next_state, reward, done, _ = agent.env.step(action)
             agent.append_sample(state, action, reward, next_state, done)
-
             
+            # Our new state is state
             state = next_state
+
             episode_reward += reward
 
             # if episode ends
             if done:
                 scores.append(episode_reward)
                 print("Episode " + str(episode+1) + ": " + str(episode_reward))
-                
+                break
             # if training is ready
             if (len(agent.memory) >= agent.batch_size):
+                # 3.4.2 UPDATING THE Q-VALUE
                 agent.train_step()
                 update_cnt += 1
-
+            
                 # if hard update is needed
                 if update_cnt % agent.target_update == 0:
                     agent._target_hard_update()
-    
+            
+        # 2.8 EXPLORATION RATE DECAY
+        # Reduce epsilon (because we need less and less exploration)
+        epsilon = min_epsilon + (max_epsilon - min_epsilon)*np.exp(-decay_rate*episode) 
+
         
