@@ -1,3 +1,5 @@
+# 2.1 IMPORTING LIBRARIES
+
 import sys
 IN_COLAB = "google.colab" in sys.modules
 
@@ -11,11 +13,13 @@ from tensorflow.keras import Model
 
 from IPython.display import clear_output
 
+# 3.2 Python function for one hot encoding
 def to_one_hot(i, n_classes=None):
     a = np.zeros(n_classes, 'uint8')
     a[i] = 1
     return a
 
+# 3.3 CREATING THE Q-Network
 # Neural Network Model Defined at Here.
 class Network(Model):
     def __init__(self, state_size: int, action_size: int, 
@@ -49,6 +53,8 @@ class DQNAgent:
             min_epsilon (float): min value of epsilon
             gamma (float): discount factor
         """
+        
+        # 3.3 CREATING THE Q-Network
         self.env = env
         
         self.state_size  = self.env.observation_space.n
@@ -60,7 +66,8 @@ class DQNAgent:
         self.dqn = Network(self.state_size, self.action_size
                           )
         self.optimizers = optimizers.Adam(lr=self.lr, )
-
+        
+    # 3.4.1 EXPLORATION VS EXPLOITATION
     def get_action(self, state, epsilon):
         state = np.asarray(to_one_hot(state, self.state_size), dtype=np.float32)
         q_value = self.dqn(tf.convert_to_tensor([state], dtype=tf.float32))[0]
@@ -74,7 +81,8 @@ class DQNAgent:
             action = np.argmax(q_value) 
 
         return action
-
+    
+    # 3.4.2 UPDATING THE Q-VALUE
     def train_step(self, state, action, reward, next_state, done):
         
         dqn_variable = self.dqn.trainable_variables
@@ -114,11 +122,12 @@ class DQNAgent:
         dqn_grads = tape.gradient(loss, dqn_variable)
         self.optimizers.apply_gradients(zip(dqn_grads, dqn_variable))
 
-# environment
+# 2.2 CREATING THE ENVIRONMENT
 env_name = "FrozenLake-v1"
 env = gym.make(env_name)
 env.seed(1)     # reproducible, general Policy gradient has high variance
 
+# 2.4 INITIALIZING THE Q-PARAMETERS
 hidden_size = 128
 max_episodes = 2500  # Set total number of episodes to train agent on.
 
@@ -142,9 +151,11 @@ agent = DQNAgent(
 
 if __name__ == "__main__":
     
-    # List of rewards
+    # 2.5 TRAINING LOOP
+    #List to contain all the rewards of all the episodes given to the agent
     scores = []
     
+    # 2.6 EACH EPISODE    
     for episode in range(max_episodes):
         ## Reset environment and get first new observation
         state = agent.env.reset()
@@ -152,15 +163,23 @@ if __name__ == "__main__":
         done = False  # has the enviroment finished?
         
         if render: env.render()
-        for step in range(max_steps):  # step index, maximum step is 99
+            
+        # 2.7 EACH TIME STEP    
+        while not done:
+        # for step in range(max_steps):  # step index, maximum step is 99
+        
+            # 3.4.1 EXPLORATION VS EXPLOITATION
             # Take the action (a) and observe the outcome state(s') and reward (r)
             action = agent.get_action(state, epsilon)
+            
+            # 2.7.2 TAKING ACTION
             next_state, reward, done, _ = agent.env.step(action)
 
             if render: env.render()
             
+            # 3.4.2 UPDATING THE Q-VALUE
             agent.train_step(state, action, reward, next_state, done)
-                
+            
             # Our new state is state
             state = next_state
 
@@ -171,9 +190,19 @@ if __name__ == "__main__":
                 scores.append(episode_reward)
                 print("Episode " + str(episode+1) + ": " + str(episode_reward))
                 break
-
+                
+        # 2.8 EXPLORATION RATE DECAY
         # Reduce epsilon (because we need less and less exploration)
         epsilon = min_epsilon + (max_epsilon - min_epsilon)*np.exp(-decay_rate*episode) 
 
     print ("Score over time: " +  str(sum(scores)/max_episodes))
+    
+    # Calculate and print the average reward per thousand episodes
+    # rewards_per_thousand_episodes = np.split(np.array(scores),int(max_episodes/1000), axis=0)
+    count = 500
+    rewards_per_thousand_episodes = np.split(np.array(scores),int(max_episodes/500))
 
+    print("********Average reward per thousand episodes********\n")
+    for r in rewards_per_thousand_episodes:
+        print(count, ": ", str(sum(r/500)))
+        count += 500

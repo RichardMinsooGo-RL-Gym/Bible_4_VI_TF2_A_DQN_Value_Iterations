@@ -13,6 +13,11 @@ from tensorflow.keras import Model
 
 from IPython.display import clear_output
 
+# 3.2 Python function for one hot encoding
+def to_one_hot(i, n_classes=None):
+    a = np.zeros(n_classes, 'uint8')
+    a[i] = 1
+    return a
 
 # 3.3 CREATING THE Q-Network
 # Neural Network Model Defined at Here.
@@ -52,7 +57,7 @@ class DQNAgent:
         # 3.3 CREATING THE Q-Network
         self.env = env
         
-        self.state_size = self.env.observation_space.shape[0]
+        self.state_size  = self.env.observation_space.n
         self.action_size = self.env.action_space.n
         
         self.lr = 0.001
@@ -64,6 +69,7 @@ class DQNAgent:
         
     # 3.4.1 EXPLORATION VS EXPLOITATION
     def get_action(self, state, epsilon):
+        state = np.asarray(to_one_hot(state, self.state_size), dtype=np.float32)
         q_value = self.dqn(tf.convert_to_tensor([state], dtype=tf.float32))[0]
         # 3. Choose an action a in the current world state (s)
         # If this number < greater than epsilon doing a random choice --> exploration
@@ -77,12 +83,14 @@ class DQNAgent:
         return action
     
     # 3.4.2 UPDATING THE Q-VALUE
-    def train_step(self, state, action, reward, next_state, done):
+    def train_step(self, state, action, reward, next_state, done, next_action):
         
         dqn_variable = self.dqn.trainable_variables
         with tf.GradientTape() as tape:
             tape.watch(dqn_variable)
             
+            state      = np.asarray(to_one_hot(state, self.state_size), dtype=np.float32)
+            next_state = np.asarray(to_one_hot(next_state, self.state_size), dtype=np.float32)            
             state      = np.float32(state)
             next_state = np.float32(next_state)
             
@@ -97,12 +105,13 @@ class DQNAgent:
             if done:
                 q_target[action] = reward
             else:
-                q_target[action] = (reward + self.gamma * np.max(next_Q[0]))
+                q_target[action] = (reward + self.gamma * next_Q[0][next_action])
+                # q_target[action] = (reward + self.gamma * np.asarray(self.dqn([next_state]))[0][next_action])
             
             ## Train network using target and predicted Q values
             # it is not real target Q value, it is just an estimation,
             # but check the Q-Learning update formula:
-            # Update Q(s,a):= Q(s,a) + lr [R(s,a) + gamma * max Q(s',a) - Q(s,a)]
+            # Update Q(s,a):= Q(s,a) + lr [R(s,a) + gamma * Q(s',a') - Q(s,a)]
             # minimizing |r + gamma * maxQ(s',a') - Q(s, a)|^2 equals to force Q'(s,a) ~~ Q(s,a)            
             q_value = self.dqn([state])
           
@@ -115,13 +124,17 @@ class DQNAgent:
         self.optimizers.apply_gradients(zip(dqn_grads, dqn_variable))
 
 # 2.2 CREATING THE ENVIRONMENT
-env_name = "CartPole-v0"
+env_name = "FrozenLake-v1"
 env = gym.make(env_name)
 env.seed(1)     # reproducible, general Policy gradient has high variance
 
 # 2.4 INITIALIZING THE Q-PARAMETERS
 hidden_size = 128
 max_episodes = 2500  # Set total number of episodes to train agent on.
+
+max_steps = 99                # Max steps per episode
+gamma = 0.95                  # Discounting rate
+render = False                # display the game environment
 
 # Exploration parameters
 epsilon = 1.0                 # Exploration rate
@@ -150,6 +163,7 @@ if __name__ == "__main__":
         episode_reward = 0
         done = False  # has the enviroment finished?
         
+        if render: env.render()
             
         # 2.7 EACH TIME STEP    
         while not done:
@@ -161,10 +175,12 @@ if __name__ == "__main__":
             
             # 2.7.2 TAKING ACTION
             next_state, reward, done, _ = agent.env.step(action)
-
+            next_action = agent.get_action(next_state, epsilon)
+            
+            if render: env.render()
             
             # 3.4.2 UPDATING THE Q-VALUE
-            agent.train_step(state, action, reward, next_state, done)
+            agent.train_step(state, action, reward, next_state, done, next_action)
             
             # Our new state is state
             state = next_state
@@ -181,4 +197,14 @@ if __name__ == "__main__":
         # Reduce epsilon (because we need less and less exploration)
         epsilon = min_epsilon + (max_epsilon - min_epsilon)*np.exp(-decay_rate*episode) 
 
+    print ("Score over time: " +  str(sum(scores)/max_episodes))
+    
+    # Calculate and print the average reward per thousand episodes
+    # rewards_per_thousand_episodes = np.split(np.array(scores),int(max_episodes/1000), axis=0)
+    count = 500
+    rewards_per_thousand_episodes = np.split(np.array(scores),int(max_episodes/500))
 
+    print("********Average reward per thousand episodes********\n")
+    for r in rewards_per_thousand_episodes:
+        print(count, ": ", str(sum(r/500)))
+        count += 500

@@ -77,7 +77,7 @@ class DQNAgent:
         return action
     
     # 3.4.2 UPDATING THE Q-VALUE
-    def train_step(self, state, action, reward, next_state, done):
+    def train_step(self, state, action, reward, next_state, done, next_action):
         
         dqn_variable = self.dqn.trainable_variables
         with tf.GradientTape() as tape:
@@ -97,12 +97,13 @@ class DQNAgent:
             if done:
                 q_target[action] = reward
             else:
-                q_target[action] = (reward + self.gamma * np.max(next_Q[0]))
+                q_target[action] = (reward + self.gamma * next_Q[0][next_action])
+                # q_target[action] = (reward + self.gamma * np.asarray(self.dqn([next_state]))[0][next_action])
             
             ## Train network using target and predicted Q values
             # it is not real target Q value, it is just an estimation,
             # but check the Q-Learning update formula:
-            # Update Q(s,a):= Q(s,a) + lr [R(s,a) + gamma * max Q(s',a) - Q(s,a)]
+            # Update Q(s,a):= Q(s,a) + lr [R(s,a) + gamma * Q(s',a') - Q(s,a)]
             # minimizing |r + gamma * maxQ(s',a') - Q(s, a)|^2 equals to force Q'(s,a) ~~ Q(s,a)            
             q_value = self.dqn([state])
           
@@ -114,12 +115,11 @@ class DQNAgent:
         dqn_grads = tape.gradient(loss, dqn_variable)
         self.optimizers.apply_gradients(zip(dqn_grads, dqn_variable))
 
-# 2.2 CREATING THE ENVIRONMENT
+# environment
 env_name = "CartPole-v0"
 env = gym.make(env_name)
 env.seed(1)     # reproducible, general Policy gradient has high variance
 
-# 2.4 INITIALIZING THE Q-PARAMETERS
 hidden_size = 128
 max_episodes = 2500  # Set total number of episodes to train agent on.
 
@@ -161,10 +161,10 @@ if __name__ == "__main__":
             
             # 2.7.2 TAKING ACTION
             next_state, reward, done, _ = agent.env.step(action)
-
+            next_action = agent.get_action(next_state, epsilon)
             
             # 3.4.2 UPDATING THE Q-VALUE
-            agent.train_step(state, action, reward, next_state, done)
+            agent.train_step(state, action, reward, next_state, done, next_action)
             
             # Our new state is state
             state = next_state
