@@ -1,100 +1,5 @@
 # IMPORTING LIBRARIES
 
-
-class SumTree:
-    write = 0
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.tree = np.zeros(2 * capacity - 1)
-        self.data = np.zeros(capacity, dtype=object)
-        self.n_entries = 0
-
-    def _propagate(self, idx, change):
-        parent = (idx - 1) // 2
-        self.tree[parent] += change
-        if parent != 0:
-            self._propagate(parent, change)
-
-    def _retrieve(self, idx, s):
-        left = 2 * idx + 1
-        right = left + 1
-        if left >= len(self.tree):
-            return idx
-        if s <= self.tree[left]:
-            return self._retrieve(left, s)
-        else:
-            return self._retrieve(right, s - self.tree[left])
-
-    def total(self):
-        return self.tree[0]
-
-    def add(self, p, data):
-        idx = self.write + self.capacity - 1
-        self.data[self.write] = data
-        self.update(idx, p)
-        self.write += 1
-        if self.write >= self.capacity:
-            self.write = 0
-        if self.n_entries < self.capacity:
-            self.n_entries += 1
-
-    def update(self, idx, p):
-        change = p - self.tree[idx]
-        self.tree[idx] = p
-        self._propagate(idx, change)
-
-    def get(self, s):
-        idx = self._retrieve(0, s)
-        dataIdx = idx - self.capacity + 1
-        return (idx, self.tree[idx], self.data[dataIdx])
-
-
-class PrioritizedReplayBuffer(object):  # stored as ( s, a, r, s_ ) in SumTree
-    e = 0.001
-    a = 0.6
-    beta = 0.4
-    beta_increment_per_sampling = 0.001
-
-    def __init__(self, capacity):
-        self.tree = SumTree(capacity)
-        self.capacity = capacity
-
-    def reset(self):
-        self.tree = SumTree(self.capacity)
-
-    def _getPriority(self, error):
-        return (error + self.e) ** self.a
-
-    def add(self, error, sample):
-        p = self._getPriority(error)
-        self.tree.add(p, sample)
-
-    def sample(self, n):
-        batch = []
-        idxs = []
-        segment = self.tree.total() / n
-        priorities = []
-        self.beta = np.min([1., self.beta + self.beta_increment_per_sampling])
-
-        for i in range(n):
-            a = segment * i
-            b = segment * (i + 1)
-
-            s = random.uniform(a, b)
-            (idx, p, data) = self.tree.get(s)
-            priorities.append(p)
-            batch.append(data)
-            idxs.append(idx)
-
-        sampling_probabilities = priorities / self.tree.total()
-        is_weight = np.power(self.tree.n_entries * sampling_probabilities, -self.beta)
-        is_weight /= is_weight.max()
-
-        return batch, idxs, is_weight
-
-    def update(self, idx, error):
-        p = self._getPriority(error)
-        self.tree.update(idx, p)
 import sys
 IN_COLAB = "google.colab" in sys.modules
 
@@ -109,8 +14,149 @@ from collections import deque
 
 from IPython.display import clear_output
 
+import collections
 
-# CREATING THE Q-Network
+class SumTree:
+    data_pointer = 0
+    
+    # Here we initialize the tree with all nodes = 0, and initialize the data with all values = 0
+    def __init__(self, capacity):
+        # Number of leaf nodes (final nodes) that contains experiences
+        self.capacity = capacity
+        
+        # Generate the tree with all nodes values = 0
+        # To understand this calculation (2 * capacity - 1) look at the schema below
+        # Remember we are in a binary node (each node has max 2 children) so 2x size of leaf (capacity) - 1 (root node)
+        # Parent nodes = capacity - 1
+        # Leaf nodes = capacity
+        self.tree = np.zeros(2 * capacity - 1)
+        
+        # Contains the experiences (so the size of data is capacity)
+        self.data = np.zeros(capacity, dtype=object)
+        self.n_entries = 0
+    
+    # Here we define function that will add our priority score in the sumtree leaf and add the experience in data:
+    def add(self, priority, data):
+        # Look at what index we want to put the experience
+        tree_index = self.data_pointer + self.capacity - 1
+        
+        """ tree:
+                    0
+                   / \
+                  0   0
+                 / \ / \
+        tree_index  0 0  0  We fill the leaves from left to right
+        """
+
+        # Update data frame
+        self.data[self.data_pointer] = data
+
+        # Update the leaf
+        self.update (tree_index, priority)
+
+        # Add 1 to data_pointer
+        self.data_pointer += 1
+
+        if self.data_pointer >= self.capacity:  # If we're above the capacity, we go back to first index (we overwrite)
+            self.data_pointer = 0
+        if self.n_entries < self.capacity:
+            self.n_entries += 1
+    
+    def _propagate(self, idx, change):
+        parent = (idx - 1) // 2
+        self.tree[parent] += change
+        if parent != 0:
+            self._propagate(parent, change)
+    
+    # Update the leaf priority score and propagate the change through tree
+    def update(self, tree_index, priority):
+        # Change = new priority score - former priority score
+        change = priority - self.tree[tree_index]
+        self.tree[tree_index] = priority
+
+        # then propagate the change through tree
+        # this method is faster than the recursive loop in the reference code
+        self._propagate(tree_index, change)
+
+    def _retrieve(self, idx, s):
+        left_child_index = 2 * idx + 1
+        right_child_index = left_child_index + 1
+        if left_child_index >= len(self.tree):
+            return idx
+        if s <= self.tree[left_child_index]:
+            return self._retrieve(left_child_index, s)
+        else:
+            return self._retrieve(right_child_index, s - self.tree[left_child_index])
+
+    def get_leaf(self, s):
+        leaf_index = self._retrieve(0, s)
+
+        data_index = leaf_index - self.capacity + 1
+
+        return (leaf_index, self.tree[leaf_index], self.data[data_index])
+    
+    def total_priority(self):
+        return self.tree[0] # Returns the root node
+
+# Now we finished constructing our SumTree object, next we'll build a memory object.
+class PrioritizedReplayBuffer(object):  # stored as ( s, a, r, s_ ) in SumTree
+    PER_e = 0.001
+    PER_a = 0.6  # Hyperparameter that we use to make a tradeoff between taking only exp with high priority and sampling randomly
+    PER_b = 0.4  # importance-sampling, from initial value increasing to 1
+    
+    PER_b_increment_per_sampling = 0.001
+    
+
+    def __init__(self, capacity):
+        # Making the tree 
+        self.tree = SumTree(capacity)
+        self.capacity = capacity
+
+    def reset(self):
+        self.tree = SumTree(self.capacity)
+
+    def _getPriority(self, error):
+        return (error + self.PER_e) ** self.PER_a
+
+    def store(self, error, sample):
+        max_priority = self._getPriority(error)
+        self.tree.add(max_priority, sample)
+        
+    # Now we create sample function, which will be used to pick batch from our tree memory, which will be used to train our model.
+    # - First, we sample a minibatch of n size, the range [0, priority_total] into priority ranges.
+    # - Then a value is uniformly sampled from each range.
+    # - Then we search in the sumtree, for the experience where priority episode_reward correspond to sample values are retrieved from.
+    def sample(self, n):
+        # Create a minibatch array that will contains the minibatch
+        minibatch = []
+        idxs = []
+        priority_segment = self.tree.total_priority() / n
+        priorities = []
+        self.PER_b = np.min([1., self.PER_b + self.PER_b_increment_per_sampling])
+
+        for i in range(n):
+            # A value is uniformly sample from each range
+            a = priority_segment * i
+            b = priority_segment * (i + 1)
+            value = np.random.uniform(a, b)
+
+            # Experience that correspond to each value is retrieved
+            (idx, p, data) = self.tree.get_leaf(value)
+            priorities.append(p)
+            minibatch.append(data)
+            idxs.append(idx)
+
+        sampling_probabilities = priorities / self.tree.total_priority()
+        is_weight = np.power(self.tree.n_entries * sampling_probabilities, -self.PER_b)
+        is_weight /= is_weight.max()
+
+        return minibatch, idxs, is_weight
+
+    def batch_update(self, idx, error):
+        p = self._getPriority(error)
+        self.tree.update(idx, p)
+
+# CREATING THE Dueling Q-Network
 # Neural Network Model Defined at Here.
 class Network(Model):
     def __init__(self, state_size: int, action_size: int, 
@@ -118,11 +164,11 @@ class Network(Model):
         """Initialization."""
         super(Network, self).__init__()
         
-        self.action_size = action_size
+        self.num_action = action_size
         self.layer1 = tf.keras.layers.Dense(hidden_size, activation='relu')
         self.layer2 = tf.keras.layers.Dense(hidden_size, activation='relu')
-        self.state = tf.keras.layers.Dense(self.action_size)
-        self.action = tf.keras.layers.Dense(self.action_size)
+        self.state = tf.keras.layers.Dense(self.num_action)
+        self.action = tf.keras.layers.Dense(self.num_action)
 
     def call(self, state):
         layer1 = self.layer1(state)
@@ -157,28 +203,33 @@ class DQNAgent:
         
         # CREATING THE Q-Network
         self.env = env
-        
+        self.env.seed(0)  
         self.state_size = self.env.observation_space.shape[0]
         self.action_size = self.env.action_space.n
         
         self.batch_size = batch_size
         # hyper parameters
+        memory_size = 10000
         self.lr = 0.001
         self.target_update = target_update
-        self.gamma = 0.99    # discount rate
+        self.gamma = 0.99
         
-        # create main model and target model
         self.dqn = Network(self.state_size, self.action_size
                           )
         self.dqn_target = Network(self.state_size, self.action_size
                           )
+        self.train_start = 1000
+
         self.optimizers = optimizers.Adam(lr=self.lr, )
         
-        self.memory = PrioritizedReplayBuffer(capacity=2000)
+        self.MEMORY = PrioritizedReplayBuffer(memory_size)
+        self.Soft_Update = False # use soft parameter update
+
+        self.TAU = 0.1 # target network soft update hyperparameter
         
         self._target_hard_update()
         
-    # 3.4.1 EXPLORATION VS EXPLOITATION
+    # EXPLORATION VS EXPLOITATION
     def get_action(self, state, epsilon):
         q_value = self.dqn(tf.convert_to_tensor([state], dtype=tf.float32))
         # 3. Choose an action a in the current world state (s)
@@ -203,16 +254,16 @@ class DQNAgent:
 
         target_value = target_value * 0.99 * (1-done) + reward
 
-        curr_Qs = np.array(self.dqn(state))[0]
-        curr_Qs = curr_Qs[action]
+        main_q = np.array(self.dqn(state))[0]
+        main_q = main_q[action]
 
-        td_error = np.abs(target_value - curr_Qs)
+        td_error = np.abs(target_value - main_q)
 
-        self.memory.add(td_error, (state, action, reward, next_state, done))
+        self.MEMORY.store(td_error, (state, action, reward, next_state, done))
 
-    # 3.4.2 UPDATING THE Q-VALUE
+    # UPDATING THE Q-VALUE
     def train_step(self):
-        mini_batch, idxs, IS_weight = self.memory.sample(self.batch_size)
+        mini_batch, idxs, IS_weight = self.MEMORY.sample(self.batch_size)
         mini_batch = np.array(mini_batch)
         states      = [i[0] for i in mini_batch]
         actions     = [i[1] for i in mini_batch]
@@ -230,56 +281,73 @@ class DQNAgent:
             next_states = tf.convert_to_tensor(np.vstack(next_states), dtype=tf.float32)
             dones       = tf.convert_to_tensor(dones, dtype=tf.float32)
             
-            curr_Qs    = self.dqn(states)
+            next_Qs = self.dqn(next_states)
+            next_Qs = tf.stop_gradient(next_Qs)
             next_Q_targs = self.dqn_target(next_states)
-            curr_Qs = tf.stop_gradient(curr_Qs)
-            next_action = tf.argmax(curr_Qs, axis=1)
+            next_action = tf.argmax(next_Qs, axis=1)
             target_value = tf.reduce_sum(tf.one_hot(next_action, self.action_size) * next_Q_targs, axis=1)
             
             mask = 1 - dones
             target_value = rewards + self.gamma * target_value * mask 
             
             curr_Qs = self.dqn(states)
-            main_value = tf.reduce_sum(tf.one_hot(actions, self.action_size) * curr_Qs, axis=1)
             
+            main_value = tf.reduce_sum(tf.one_hot(actions, self.action_size) * curr_Qs, axis=1)
             error = tf.square(main_value - target_value) * 0.5
             error = error * tf.convert_to_tensor(IS_weight, dtype=tf.float32)
             loss  = tf.reduce_mean(error)
             
         dqn_grads = tape.gradient(loss, dqn_variable)
         self.optimizers.apply_gradients(zip(dqn_grads, dqn_variable))
-
-        state_value = np.array(self.dqn(tf.convert_to_tensor(np.vstack(states), dtype=tf.float32)))
+        
+        state_value = np.array(self.dqn(states))
         state_value = np.array([sv[a] for a, sv in zip(np.array(actions), state_value)])
 
         td_error = np.abs(target_value - state_value)
         
         for i in range(self.batch_size):
-            idx = idxs[i]
-            self.memory.update(idx, td_error[i])            
-
+            tree_idx = idxs[i]
+            self.MEMORY.batch_update(tree_idx, td_error[i])
+        
+    # after some time interval update the target model to be same with model
     def _target_hard_update(self):
-        """Hard update: target <- local."""
-        self.dqn_target.set_weights(self.dqn.get_weights())
+        if not self.Soft_Update:
+            self.dqn_target.set_weights(self.dqn.get_weights())
+            return
+        if self.Soft_Update:
+            q_model_theta = self.dqn.get_weights()
+            dqn_target_theta = self.dqn_target.get_weights()
+            counter = 0
+            for q_weight, target_weight in zip(q_model_theta, dqn_target_theta):
+                target_weight = target_weight * (1-self.TAU) + q_weight * self.TAU
+                dqn_target_theta[counter] = target_weight
+                counter += 1
+            self.dqn_target.set_weights(dqn_target_theta)
+    
+    def load(self, name):
+        self.dqn = load_model(name)
 
+    def save(self, name):
+        self.dqn.save(name)
+    
 # CREATING THE ENVIRONMENT
 env_name = "CartPole-v0"
 env = gym.make(env_name)
 
 # parameters
-target_update = 100
+target_update = 20
 
 
 # INITIALIZING THE Q-PARAMETERS
-hidden_size = 128
-max_episodes = 200  # Set total number of episodes to train agent on.
+hidden_size = 64
+max_episodes = 300  # Set total number of episodes to train agent on.
 batch_size = 64
 
 # Exploration parameters
 epsilon = 1.0                 # Exploration rate
 max_epsilon = 1.0             # Exploration probability at start
 min_epsilon = 0.01            # Minimum exploration probability 
-decay_rate = 0.005            # Exponential decay rate for exploration prob
+decay_rate = 0.025            # Exponential decay rate for exploration prob
 
 # train
 agent = DQNAgent(
@@ -293,11 +361,11 @@ agent = DQNAgent(
 if __name__ == "__main__":
     
     update_cnt    = 0
-    # 2.5 TRAINING LOOP
+    # TRAINING LOOP
     #List to contain all the rewards of all the episodes given to the agent
     scores = []
     
-    # 2.6 EACH EPISODE    
+    # EACH EPISODE    
     for episode in range(max_episodes):
         ## Reset environment and get first new observation
         state = agent.env.reset()
@@ -305,10 +373,10 @@ if __name__ == "__main__":
         done = False  # has the enviroment finished?
         
             
-        # 2.7 EACH TIME STEP    
+        # EACH TIME STEP    
         while not done:
-        # for step in range(max_steps):  # step index, maximum step is 99
-        
+        # for step in range(max_steps):  # step index, maximum step is 200
+            update_cnt += 1
             # 3.4.1 EXPLORATION VS EXPLOITATION
             # Take the action (a) and observe the outcome state(s') and reward (r)
             action = agent.get_action(state, epsilon)
@@ -325,13 +393,13 @@ if __name__ == "__main__":
             # if episode ends
             if done:
                 scores.append(episode_reward)
-                print("Episode " + str(episode+1) + ": " + str(episode_reward))
+                print("episode: {}/{}, score: {}, e: {:.4}".format(episode+1, max_episodes, episode_reward, epsilon)) 
                 break
-            update_cnt += 1
             # if training is ready
-            if update_cnt >= 1000:
+            if (update_cnt >= agent.batch_size):
                 # 3.4.2 UPDATING THE Q-VALUE
                 agent.train_step()
+
             
                 # if hard update is needed
                 if update_cnt % agent.target_update == 0:
